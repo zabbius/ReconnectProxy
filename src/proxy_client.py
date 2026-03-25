@@ -6,7 +6,7 @@ import socket
 import sys
 from typing import Dict, Optional
 
-from session import ProxyClientSession, SessionState
+from session import ProxyClientSession
 from protocol import (
     SESSION_ID_NEW,
     SESSION_ID_ERROR,
@@ -120,7 +120,7 @@ class ProxyClient:
             self.logger.error(f"Failed to connect to proxy-server: {e}")
             return None
     
-    def _create_session(self, client_sock: socket.socket, addr) -> Optional[ProxyClientSession]:
+    def _create_session(self, client_sock: socket.socket) -> Optional[ProxyClientSession]:
         """Create a new session with the proxy-server."""
         # Connect to proxy-server with session_id=0 (new session)
         proxy_sock = self._connect_to_proxy_server()
@@ -174,25 +174,21 @@ class ProxyClient:
         session = ProxyClientSession(id=session_id)
         session.outbound_socket = proxy_sock
         session.client_socket = client_sock
-        session.state = SessionState.ACTIVE
         self.sessions[session_id] = session
         
         return session
     
-    def _attach_session(self, session: ProxyClientSession) -> bool:
-        """Attach inbound socket to existing session."""
-        # Connect to proxy-server with negative session_id
+    def _reconnect_outbound(self, session: ProxyClientSession) -> bool:
+        """Reconnect outbound socket to existing session."""
         proxy_sock = self._connect_to_proxy_server()
         if proxy_sock is None:
-            self.logger.error("Failed to connect to proxy-server for inbound")
+            self.logger.error("Failed to connect to proxy-server for outbound reconnection")
             return False
         
-        inbound_session_id = -session.id
-        
-        # Send negative session ID for inbound
+        # Send positive session ID for outbound reconnection
         try:
-            proxy_sock.sendall(encode_session_id(inbound_session_id))
-            self.logger.debug(f"Sent session_id={inbound_session_id} for inbound")
+            proxy_sock.sendall(encode_session_id(session.id))
+            self.logger.debug(f"Sent session_id={session.id} for outbound reconnection")
         except Exception as e:
             self.logger.error(f"Error sending session request: {e}")
             proxy_sock.close()
@@ -213,7 +209,56 @@ class ProxyClient:
         
         # Check for error response
         if response_id == SESSION_ID_ERROR:
-            self.logger.error("Proxy-server returned error for inbound session")
+            self.logger.error("Proxy-server returned error for outbound reconnection")
+            proxy_sock.close()
+            return False
+        
+        # Verify matching session ID
+        if response_id != session.id:
+            self.logger.error(f"Session ID mismatch: expected {session.id}, got {response_id}")
+            proxy_sock.close()
+            return False
+        
+        session.outbound_socket = proxy_sock
+        session.reset_counters()
+        self.logger.info(f"Session {session.id} outbound socket reconnected")
+        
+        return True
+    
+    def _reconnect_inbound(self, session: ProxyClientSession) -> bool:
+        """Reconnect inbound socket to existing session."""
+        proxy_sock = self._connect_to_proxy_server()
+        if proxy_sock is None:
+            self.logger.error("Failed to connect to proxy-server for inbound reconnection")
+            return False
+        
+        inbound_session_id = -session.id
+        
+        # Send negative session ID for inbound reconnection
+        try:
+            proxy_sock.sendall(encode_session_id(inbound_session_id))
+            self.logger.debug(f"Sent session_id={inbound_session_id} for inbound reconnection")
+        except Exception as e:
+            self.logger.error(f"Error sending session request: {e}")
+            proxy_sock.close()
+            return False
+        
+        # Wait for response
+        try:
+            data = proxy_sock.recv(1)
+            if len(data) < 1:
+                self.logger.warning("Incomplete session response")
+                proxy_sock.close()
+                return False
+            response_id = decode_session_id(data)
+        except Exception as e:
+            self.logger.error(f"Error reading session response: {e}")
+            proxy_sock.close()
+            return False
+        
+        # Check for error response
+        if response_id == SESSION_ID_ERROR:
+            self.logger.error("Proxy-server returned error for inbound reconnection")
             proxy_sock.close()
             return False
         
@@ -224,23 +269,27 @@ class ProxyClient:
             return False
         
         session.inbound_socket = proxy_sock
-        session.state = SessionState.ACTIVE
-        self.logger.info(f"Session {session.id} inbound socket attached")
+        session.reset_counters()
+        self.logger.info(f"Session {session.id} inbound socket reconnected")
         
         return True
+    
+    def _attach_inbound(self, session: ProxyClientSession) -> bool:
+        """Attach inbound socket to new session."""
+        return self._reconnect_inbound(session)
     
     def _handle_client_connection(self, client_sock: socket.socket, addr) -> None:
         """Handle a connection from a client."""
         self.logger.info(f"Client connected from {addr}")
         
         # Create new session with proxy-server
-        session = self._create_session(client_sock, addr)
+        session = self._create_session(client_sock)
         if session is None:
             self.logger.error("Failed to create session")
             return
         
         # Attach inbound socket
-        if not self._attach_session(session):
+        if not self._attach_inbound(session):
             self.logger.error("Failed to attach inbound socket")
             session.close_all_sockets()
             del self.sessions[session.id]

@@ -4,23 +4,13 @@ import logging
 import socket
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from typing import Optional
-
-
-class SessionState(Enum):
-    """Session states for proxy components."""
-    NEW = "NEW"
-    PARTIAL = "PARTIAL"
-    ACTIVE = "ACTIVE"
-    CLOSED = "CLOSED"
 
 
 @dataclass
 class Session:
     """Base session class with common properties."""
     id: int
-    state: SessionState = SessionState.NEW
     bytes_sent_outbound: int = 0
     bytes_sent_inbound: int = 0
     start_time: datetime = field(default_factory=datetime.now)
@@ -58,7 +48,6 @@ class ProxyServerSession(Session):
         self.outbound_socket = None
         self.inbound_socket = None
         self.server_socket = None
-        self.state = SessionState.CLOSED
         self.logger.info("Session closed, all sockets closed")
 
 
@@ -83,5 +72,4 @@ class ProxyClientSession(Session):
         self.outbound_socket = None
         self.inbound_socket = None
         self.client_socket = None
-        self.state = SessionState.CLOSED
         self.logger.info("Session closed, all sockets closed")

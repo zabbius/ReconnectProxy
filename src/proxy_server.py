@@ -6,7 +6,7 @@ import socket
 import sys
 from typing import Dict, Optional
 
-from session import ProxyServerSession, SessionState
+from session import ProxyServerSession
 from protocol import (
     SESSION_ID_NEW,
     SESSION_ID_ERROR,
@@ -145,7 +145,6 @@ class ProxyServer:
         session = ProxyServerSession(id=session_id)
         session.outbound_socket = client_sock
         session.server_socket = server_sock
-        session.state = SessionState.PARTIAL
         self.sessions[session_id] = session
         
         # Send session ID back to proxy-client
@@ -173,9 +172,8 @@ class ProxyServer:
 
         # Attach outbound socket (reattach after reconnection)
         session.outbound_socket = client_sock
-        session.state = SessionState.ACTIVE
         session.reset_counters()  # Reset counters for reconnection
-        self.logger.info(f"Session {session_id} reattached outbound socket, state=ACTIVE")
+        self.logger.info(f"Session {session_id} reattached outbound socket")
         
         # Send session ID back
         try:
@@ -200,12 +198,12 @@ class ProxyServer:
         
         # Attach inbound socket
         session.inbound_socket = client_sock
-        session.state = SessionState.ACTIVE
-        self.logger.info(f"Session {session_id} attached inbound socket, state=ACTIVE")
+        self.logger.info(f"Session {session_id} attached inbound socket")
         
         # Send session ID back
         try:
-            client_sock.sendall(encode_session_id(session_id))
+            # Sending negative id to inbound socket
+            client_sock.sendall(encode_session_id(-session_id))
         except Exception as e:
             self.logger.error(f"Error sending session ID: {e}")
             session.close_all_sockets()
