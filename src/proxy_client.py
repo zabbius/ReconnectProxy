@@ -82,16 +82,16 @@ def parse_args() -> argparse.Namespace:
 
 class ProxyClient:
     """Proxy-Client component implementation."""
-    
+
     def __init__(
-        self,
-        listen_host: str,
-        listen_port: int,
-        proxy_host: str,
-        proxy_port: int,
-        chunk_size: int = 16,
-        max_size: int = 256,
-        max_time: int = 5,
+            self,
+            listen_host: str,
+            listen_port: int,
+            proxy_host: str,
+            proxy_port: int,
+            chunk_size: int = 16,
+            max_size: int = 256,
+            max_time: int = 5,
     ):
         self.listen_host = listen_host
         self.listen_port = listen_port
@@ -100,12 +100,12 @@ class ProxyClient:
         self.chunk_size = chunk_size
         self.max_size = max_size
         self.max_time = max_time
-        
+
         self.logger = logging.getLogger("proxy-client")
         self.sessions: Dict[int, ProxyClientSession] = {}
-        
+
         self.listen_socket: Optional[socket.socket] = None
-    
+
     def _connect_to_proxy_server(self, session_id: int) -> Optional[(socket.socket, int)]:
         """Connect to the proxy-server."""
         try:
@@ -171,62 +171,63 @@ class ProxyClient:
 
         proxy_sock, session_id = result
 
-        self.logger.info(f"Session {session_id} established with proxy-server")
-
-        session = ProxyClientSession(session_id=session_id, client_socket=client_sock, outbound_socket=proxy_sock)
+        session = ProxyClientSession(session_id=session_id, client_socket=client_sock)
+        session.outbound_socket = proxy_sock
+        session.reset_inbound_counters()
         self.sessions[session_id] = session
-        
+
+        self.logger.info(f"Session {session_id} established with proxy-server")
         return session
-    
+
     def _reconnect_outbound(self, session: ProxyClientSession) -> bool:
         """Reconnect outbound socket to existing session."""
         result = self._connect_to_proxy_server(session.session_id)
         if result is None:
             self.logger.error("Failed to connect to proxy-server for outbound reconnection")
             return False
-        
+
         proxy_sock, _ = result
 
         session.outbound_socket = proxy_sock
         session.reset_outbound_counters()
         self.logger.info(f"Session {session.session_id} outbound socket reconnected")
-        
+
         return True
-    
+
     def _reconnect_inbound(self, session: ProxyClientSession) -> bool:
         """Reconnect inbound socket to existing session."""
         result = self._connect_to_proxy_server(-session.session_id)
         if result is None:
             self.logger.error("Failed to connect to proxy-server for inbound reconnection")
             return False
-        
+
         proxy_sock, _ = result
 
         session.inbound_socket = proxy_sock
         session.reset_inbound_counters()
         self.logger.info(f"Session {session.session_id} inbound socket reconnected")
-        
+
         return True
 
     def _handle_client_connection(self, client_sock: socket.socket, addr) -> None:
         """Handle a connection from a client."""
         self.logger.info(f"Client connected from {addr}")
-        
+
         # Create new session with proxy-server
         session = self._create_session(client_sock)
         if session is None:
             self.logger.error("Failed to create session")
             return
-        
+
         # Attach inbound socket
         if not self._reconnect_inbound(session):
             self.logger.error("Failed to attach inbound socket")
             session.close_all_sockets()
             del self.sessions[session.session_id]
             return
-        
+
         self.logger.info(f"Session {session.session_id} fully established, data transfer ready")
-    
+
     def run(self) -> None:
         """Run the proxy client."""
         # Create listen socket
@@ -234,12 +235,10 @@ class ProxyClient:
         self.listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listen_socket.bind((self.listen_host, self.listen_port))
         self.listen_socket.listen(5)
-        
-        self.logger.info(
-            f"Proxy-Client listening on {self.listen_host}:{self.listen_port}"
-        )
+
+        self.logger.info(f"Proxy-Client listening on {self.listen_host}:{self.listen_port}")
         self.logger.info(f"Proxy-Server: {self.proxy_host}:{self.proxy_port}")
-        
+
         try:
             while True:
                 client_sock, addr = self.listen_socket.accept()
@@ -256,13 +255,13 @@ class ProxyClient:
 def main() -> int:
     """Main entry point for proxy-client."""
     args = parse_args()
-    
+
     # Configure logging
     logging.basicConfig(
         level=LOG_LEVELS.get(args.log_level, logging.INFO),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    
+
     client = ProxyClient(
         listen_host=args.listen_host,
         listen_port=args.listen_port,
@@ -272,13 +271,13 @@ def main() -> int:
         max_size=args.max_size,
         max_time=args.max_time,
     )
-    
+
     try:
         client.run()
     except Exception as e:
         logging.error(f"Proxy-client error: {e}")
         return 1
-    
+
     return 0
 
 

@@ -82,16 +82,16 @@ def parse_args() -> argparse.Namespace:
 
 class ProxyServer:
     """Proxy-Server component implementation."""
-    
+
     def __init__(
-        self,
-        listen_host: str,
-        listen_port: int,
-        server_host: str,
-        server_port: int,
-        chunk_size: int = 16,
-        max_size: int = 256,
-        max_time: int = 5,
+            self,
+            listen_host: str,
+            listen_port: int,
+            server_host: str,
+            server_port: int,
+            chunk_size: int = 16,
+            max_size: int = 256,
+            max_time: int = 5,
     ):
         self.listen_host = listen_host
         self.listen_port = listen_port
@@ -100,13 +100,13 @@ class ProxyServer:
         self.chunk_size = chunk_size
         self.max_size = max_size
         self.max_time = max_time
-        
+
         self.logger = logging.getLogger("proxy-server")
         self.sessions: Dict[int, ProxyServerSession] = {}
         self.session_id_counter = 1
-        
+
         self.listen_socket: Optional[socket.socket] = None
-    
+
     def _generate_session_id(self) -> int:
         """Generate a new session ID."""
         session_id = self.session_id_counter
@@ -127,7 +127,7 @@ class ProxyServer:
     def _handle_client_connection(self, client_sock: socket.socket, addr) -> None:
         """Handle a connection from proxy-client."""
         self.logger.info(f"Connection from proxy-client {addr}")
-        
+
         # Read session ID once
         try:
             data = client_sock.recv(1)
@@ -140,7 +140,7 @@ class ProxyServer:
             self.logger.error(f"Error reading session request: {e}")
             client_sock.close()
             return
-        
+
         if session_id == SESSION_ID_NEW:
             # Connect to target server
             server_sock = self._connect_to_server()
@@ -186,8 +186,6 @@ class ProxyServer:
             del self.sessions[session_id]
             return
 
-
-
     def run(self) -> None:
         """Run the proxy server."""
         # Create listen socket
@@ -195,12 +193,10 @@ class ProxyServer:
         self.listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listen_socket.bind((self.listen_host, self.listen_port))
         self.listen_socket.listen(5)
-        
-        self.logger.info(
-            f"Proxy-Server listening on {self.listen_host}:{self.listen_port}"
-        )
+
+        self.logger.info(f"Proxy-Server listening on {self.listen_host}:{self.listen_port}")
         self.logger.info(f"Target server: {self.server_host}:{self.server_port}")
-        
+
         try:
             while True:
                 client_sock, addr = self.listen_socket.accept()
@@ -217,13 +213,13 @@ class ProxyServer:
 def main() -> int:
     """Main entry point for proxy-server."""
     args = parse_args()
-    
+
     # Configure logging
     logging.basicConfig(
         level=LOG_LEVELS.get(args.log_level, logging.INFO),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    
+
     server = ProxyServer(
         listen_host=args.listen_host,
         listen_port=args.listen_port,
@@ -233,13 +229,13 @@ def main() -> int:
         max_size=args.max_size,
         max_time=args.max_time,
     )
-    
+
     try:
         server.run()
     except Exception as e:
         logging.error(f"Proxy-server error: {e}")
         return 1
-    
+
     return 0
 
 
