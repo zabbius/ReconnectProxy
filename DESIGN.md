@@ -31,6 +31,9 @@ ReconnectProxy is a TCP proxy system consisting of two components: **proxy-clien
 --listen-host <host>      Host to bind to for listening (default: 127.0.0.1)
 --proxy-port <port>       Port of proxy-server to connect to (required)
 --proxy-host <host>       Host of proxy-server to connect to (default: 127.0.0.1)
+--chunk-size <bytes>      Maximum size of data chunks for transfer (default: 16)
+--max-size <bytes>        Maximum total bytes to transfer before reconnection (default: 256)
+--max-time <seconds>      Maximum time in seconds before reconnection (default: 5)
 --log-level <level>       Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
 ```
 
@@ -48,6 +51,9 @@ ReconnectProxy is a TCP proxy system consisting of two components: **proxy-clien
 --listen-host <host>      Host to bind to for listening (default: 127.0.0.1)
 --server-port <port>      Port of target server to connect to (required)
 --server-host <host>      Host of target server to connect to (default: 127.0.0.1)
+--chunk-size <bytes>      Maximum size of data chunks for transfer (default: 16)
+--max-size <bytes>        Maximum total bytes to transfer before reconnection (default: 256)
+--max-time <seconds>      Maximum time in seconds before reconnection (default: 5)
 --log-level <level>       Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
 ```
 
@@ -114,6 +120,30 @@ PROXY-CLIENT                          PROXY-SERVER
      |<========== DATA TRANSFER ==========>|
 ```
 
+## Data Transfer Algorithm
+
+### Outbound Data (Proxy-Client → Proxy-Server)
+
+1. Proxy-client establishes outbound socket to proxy-server
+2. Data is sent from proxy-client to proxy-server in chunks with size not more than `CHUNK_SIZE`
+3. After sending `MAX_SIZE` bytes total, proxy-client closes outbound socket (triggers reconnection)
+4. Outbound socket is closed by proxy-client after `MAX_TIME` seconds (triggers reconnection)
+
+### Inbound Data (Proxy-Server → Proxy-Client)
+
+1. Proxy-client establishes inbound socket to proxy-server
+2. Data is sent from proxy-server to proxy-client in chunks with size not more than `CHUNK_SIZE`
+3. After sending `MAX_SIZE` bytes total, proxy-server closes inbound socket (triggers reconnection)
+4. Inbound socket is closed by proxy-server after `MAX_TIME` seconds (triggers reconnection)
+
+### Parameters
+
+| Parameter | Description | Default               |
+|-----------|-------------|-----------------------|
+| CHUNK_SIZE | Maximum size of data chunks for transfer | 16 bytes              |
+| MAX_SIZE | Maximum total bytes to transfer before reconnection | 256 bytes (1 MB)      |
+| MAX_TIME | Maximum time in seconds before reconnection | 5 seconds  |
+
 ## Connection Handling
 
 ### Normal Termination
@@ -134,6 +164,12 @@ PROXY-CLIENT                          PROXY-SERVER
 - If session exists: Reopen socket with session ID
 - Outbound: Use positive session ID
 - Inbound: Use negative session ID
+
+#### Reconnection Triggers
+1. **MAX_SIZE reached**: Socket closed after transferring maximum allowed bytes
+2. **MAX_TIME elapsed**: Socket closed after maximum time duration
+3. **Connection lost**: Network failure triggers automatic reconnection
+4. **Session cleanup**: Session deleted after normal termination
 
 ## Data Flow
 
@@ -175,6 +211,8 @@ class Session:
     inbound_socket: socket   # Socket from proxy-client (inbound)
     server_socket: socket      # Socket to target server
     state: SessionState        # NEW, ACTIVE, PARTIAL, CLOSED
+    bytes_sent: int            # Total bytes sent (for MAX_SIZE tracking)
+    start_time: datetime       # Session start time (for MAX_TIME tracking)
 ```
 
 #### Session (Proxy-Client)
@@ -185,20 +223,16 @@ class Session:
     inbound_socket: socket   # Socket to proxy-server (inbound)
     client_socket: socket      # Socket to local client
     state: SessionState        # ACTIVE, CLOSED
+    bytes_sent: int            # Total bytes sent (for MAX_SIZE tracking)
+    start_time: datetime       # Session start time (for MAX_TIME tracking)
 ```
-
-### Threading Model
-
-Each connection uses two threads:
-- **Reader thread**: Reads data from socket and forwards to destination
-- **Writer thread**: Not needed - data is written directly from reader thread
 
 ### Logging
 
 Log levels:
-- **DEBUG**: Detailed packet-level information
-- **INFO**: Connection establishment/teardown events
-- **WARNING**: Retries, partial failures
+- **DEBUG**: Detailed packet-level information, chunk transfer details
+- **INFO**: Connection establishment/teardown events, reconnection events
+- **WARNING**: Chunk size limits reached, time-based reconnections
 - **ERROR**: Critical failures, session termination
 
 ## Command Line Examples
@@ -210,6 +244,9 @@ python proxy_server.py \
     --listen-host 0.0.0.0 \
     --server-port 8080 \
     --server-host 192.168.1.100 \
+    --chunk-size 8192 \
+    --max-size 1048576 \
+    --max-time 300 \
     --log-level INFO
 ```
 
@@ -220,17 +257,29 @@ python proxy_client.py \
     --listen-host 127.0.0.1 \
     --proxy-port 1080 \
     --proxy-host 192.168.1.100 \
+    --chunk-size 8192 \
+    --max-size 1048576 \
+    --max-time 300 \
     --log-level INFO
 ```
 
 ### Full Flow Example
 ```bash
-# Terminal 1: Start proxy-server
-python proxy_server.py --listen-port 1080 --server-port 80
+# Terminal 1: Start proxy-server with custom parameters
+python proxy_server.py \
+    --listen-port 1080 \
+    --server-port 80 \
+    --chunk-size 4096 \
+    --max-size 524288 \
+    --max-time 60
 
-# Terminal 2: Start proxy-client
-python proxy_client.py --listen-port 8080 --proxy-port 1080
+# Terminal 2: Start proxy-client with custom parameters
+python proxy_client.py \
+    --listen-port 8080 \
+    --proxy-port 1080 \
+    --chunk-size 4096 \
+    --max-size 524288 \
+    --max-time 60
 
 # Terminal 3: Connect to proxy-client
 curl --proxy localhost:8080 http://example.com
-```
