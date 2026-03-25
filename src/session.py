@@ -10,33 +10,49 @@ from typing import Optional
 @dataclass
 class Session:
     """Base session class with common properties."""
-    id: int
-    bytes_sent_outbound: int = 0
-    bytes_sent_inbound: int = 0
-    start_time: datetime = field(default_factory=datetime.now)
-    
+    session_id: int
+    bytes_sent_outbound: int
+    bytes_sent_inbound: int
+    outbound_start_time: datetime
+    inbound_start_time: datetime
+    outbound_socket: Optional[socket.socket]
+    inbound_socket: Optional[socket.socket]
+
+    def __init__(self, session_id: int, outbound_socket: socket.socket):
+        self.session_id = session_id
+        self.bytes_sent_outbound = 0
+        self.outbound_start_time = datetime.now()
+        self.bytes_sent_inbound = 0
+        self.inbound_start_time = datetime.now()
+        self.outbound_socket = outbound_socket
+        self.inbound_socket = None
+
     def __post_init__(self):
         """Initialize logging for the session."""
-        self.logger = logging.getLogger(f"session.{self.id}")
-    
-    def reset_counters(self) -> None:
-        """Reset byte counters for reconnection."""
+        self.logger = logging.getLogger(f"session.{self.session_id}")
+
+    def reset_outbound_counters(self) -> None:
+        """Reset outbound byte counter for reconnection."""
         self.bytes_sent_outbound = 0
+        self.outbound_start_time = datetime.now()
+        self.logger.debug("Session outbound counters reset")
+
+    def reset_inbound_counters(self) -> None:
+        """Reset inbound byte counter for reconnection."""
         self.bytes_sent_inbound = 0
-        self.start_time = datetime.now()
-        self.logger.debug("Session counters reset")
+        self.inbound_start_time = datetime.now()
+        self.logger.debug("Session inbound counters reset")
 
 
 class ProxyServerSession(Session):
     """Session for proxy-server component."""
-    
-    def __init__(self, id: int):
-        super().__init__(id=id)
-        self.outbound_socket: Optional[socket.socket] = None
-        self.inbound_socket: Optional[socket.socket] = None
-        self.server_socket: Optional[socket.socket] = None
-        self.logger = logging.getLogger(f"proxy-server.session.{id}")
-    
+    server_socket: Optional[socket.socket]
+
+    def __init__(self, session_id: int, server_socket: socket.socket, outbound_socket: socket.socket):
+        super().__init__(session_id=session_id, outbound_socket=outbound_socket)
+        self.server_socket = server_socket
+        self.logger = logging.getLogger(f"proxy-server.session.{session_id}")
+
     def close_all_sockets(self) -> None:
         """Close all sockets associated with this session."""
         for sock in [self.outbound_socket, self.inbound_socket, self.server_socket]:
@@ -53,14 +69,13 @@ class ProxyServerSession(Session):
 
 class ProxyClientSession(Session):
     """Session for proxy-client component."""
-    
-    def __init__(self, id: int):
-        super().__init__(id=id)
-        self.outbound_socket: Optional[socket.socket] = None
-        self.inbound_socket: Optional[socket.socket] = None
-        self.client_socket: Optional[socket.socket] = None
-        self.logger = logging.getLogger(f"proxy-client.session.{id}")
-    
+    client_socket: Optional[socket.socket]
+
+    def __init__(self, session_id: int, client_socket: socket.socket, outbound_socket: socket.socket):
+        super().__init__(session_id=session_id, outbound_socket=outbound_socket)
+        self.client_socket: Optional[socket.socket] = client_socket
+        self.logger = logging.getLogger(f"proxy-client.session.{session_id}")
+
     def close_all_sockets(self) -> None:
         """Close all sockets associated with this session."""
         for sock in [self.outbound_socket, self.inbound_socket, self.client_socket]:

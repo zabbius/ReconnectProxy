@@ -6,16 +6,13 @@ import socket
 import sys
 from typing import Dict, Optional
 
-from session import ProxyServerSession
 from protocol import (
     SESSION_ID_NEW,
     SESSION_ID_ERROR,
     encode_session_id,
     decode_session_id,
-    is_error_response,
-    is_new_session_response,
-    is_inbound_session_response,
 )
+from session import ProxyServerSession
 
 # Configure logging
 LOG_LEVELS = {
@@ -142,9 +139,7 @@ class ProxyServer:
         self.logger.info(f"Created new session {session_id}")
         
         # Create session
-        session = ProxyServerSession(id=session_id)
-        session.outbound_socket = client_sock
-        session.server_socket = server_sock
+        session = ProxyServerSession(session_id=session_id, server_socket=server_sock, outbound_socket=client_sock)
         self.sessions[session_id] = session
         
         # Send session ID back to proxy-client
@@ -172,7 +167,7 @@ class ProxyServer:
 
         # Attach outbound socket (reattach after reconnection)
         session.outbound_socket = client_sock
-        session.reset_counters()  # Reset counters for reconnection
+        session.reset_outbound_counters()  # Reset outbound counters for reconnection
         self.logger.info(f"Session {session_id} reattached outbound socket")
         
         # Send session ID back
