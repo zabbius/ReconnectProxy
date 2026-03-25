@@ -107,17 +107,21 @@
 
 ### Session ID Specification
 
+Session IDs are signed 8-bit integers (-128 to 127).
+
 | ID Range | Meaning | Usage |
 |----------|---------|-------|
 | `0` | Special value for creating new sessions | Outbound socket only |
 | `1-127` | Positive session IDs | Outbound data streams |
 | `-127 to -1` | Negative session IDs | Inbound data streams |
+| `-128` | Reserved | Not used for session IDs |
 
 **Session ID Rules**:
 1. Session ID `0` is reserved for new session creation only
 2. Negative IDs represent inbound data streams (e.g., `-42` for session `42`)
 3. Session IDs wrap around after 127
 4. Session ID `0` received as a response indicates an error
+5. Session IDs are encoded as signed 8-bit integers (1 byte)
 
 ### Session States
 

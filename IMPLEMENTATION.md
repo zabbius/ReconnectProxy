@@ -12,11 +12,22 @@
 
 ## Data Structures
 
+### Session ID Specification
+
+Session IDs are signed 8-bit integers (-128 to 127).
+
+| ID Range | Meaning | Usage |
+|----------|---------|-------|
+| `0` | Special value for creating new sessions | Outbound socket only |
+| `1-127` | Positive session IDs | Outbound data streams |
+| `-127 to -1` | Negative session IDs | Inbound data streams |
+| `-128` | Reserved | Not used for session IDs |
+
 ### Session (Proxy-Server)
 
 ```python
 class Session:
-    id: int              # Session ID (1-127)
+    id: int              # Session ID (1-127, signed 8-bit)
     outbound_socket: socket  # Socket from proxy-client (outbound)
     inbound_socket: socket   # Socket from proxy-client (inbound)
     server_socket: socket      # Socket to target server
