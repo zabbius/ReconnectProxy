@@ -18,13 +18,13 @@ class Session:
     outbound_socket: Optional[socket.socket]
     inbound_socket: Optional[socket.socket]
 
-    def __init__(self, session_id: int, outbound_socket: socket.socket):
+    def __init__(self, session_id: int):
         self.session_id = session_id
         self.bytes_sent_outbound = 0
         self.outbound_start_time = datetime.now()
         self.bytes_sent_inbound = 0
         self.inbound_start_time = datetime.now()
-        self.outbound_socket = outbound_socket
+        self.outbound_socket = None
         self.inbound_socket = None
 
     def __post_init__(self):
@@ -48,8 +48,8 @@ class ProxyServerSession(Session):
     """Session for proxy-server component."""
     server_socket: Optional[socket.socket]
 
-    def __init__(self, session_id: int, server_socket: socket.socket, outbound_socket: socket.socket):
-        super().__init__(session_id=session_id, outbound_socket=outbound_socket)
+    def __init__(self, session_id: int, server_socket: socket.socket):
+        super().__init__(session_id=session_id)
         self.server_socket = server_socket
         self.logger = logging.getLogger(f"proxy-server.session.{session_id}")
 
@@ -71,8 +71,8 @@ class ProxyClientSession(Session):
     """Session for proxy-client component."""
     client_socket: Optional[socket.socket]
 
-    def __init__(self, session_id: int, client_socket: socket.socket, outbound_socket: socket.socket):
-        super().__init__(session_id=session_id, outbound_socket=outbound_socket)
+    def __init__(self, session_id: int, client_socket: socket.socket):
+        super().__init__(session_id=session_id)
         self.client_socket: Optional[socket.socket] = client_socket
         self.logger = logging.getLogger(f"proxy-client.session.{session_id}")
 

@@ -112,7 +112,7 @@ class ProxyServer:
         session_id = self.session_id_counter
         self.session_id_counter = (self.session_id_counter % 127) + 1
         return session_id
-    
+
     def _connect_to_server(self) -> Optional[socket.socket]:
         """Connect to the target server."""
         try:
@@ -123,87 +123,7 @@ class ProxyServer:
         except Exception as e:
             self.logger.error(f"Failed to connect to server: {e}")
             return None
-    
-    def _handle_new_connection(self, client_sock: socket.socket) -> None:
-        """Handle new session creation from proxy-client (session_id=0)."""
-        # Connect to target server
-        server_sock = self._connect_to_server()
-        if server_sock is None:
-            # Send error response
-            client_sock.sendall(encode_session_id(SESSION_ID_ERROR))
-            client_sock.close()
-            return
-        
-        # Generate new session ID
-        session_id = self._generate_session_id()
-        self.logger.info(f"Created new session {session_id}")
-        
-        # Create session
-        session = ProxyServerSession(session_id=session_id, server_socket=server_sock, outbound_socket=client_sock)
-        self.sessions[session_id] = session
-        
-        # Send session ID back to proxy-client
-        try:
-            client_sock.sendall(encode_session_id(session_id))
-            self.logger.info(f"Sent session_id={session_id} to proxy-client")
-        except Exception as e:
-            self.logger.error(f"Error sending session ID: {e}")
-            session.close_all_sockets()
-            del self.sessions[session_id]
-            return
-    
-    def _handle_outbound_connection(self, client_sock: socket.socket, session_id: int) -> None:
-        """Handle outbound connection from proxy-client (reattaching existing session)."""
-        # session_id should be positive (1-127) for reattaching
-        
-        # Look up session
-        if session_id not in self.sessions:
-            self.logger.warning(f"Session {session_id} not found for reattach")
-            client_sock.sendall(encode_session_id(SESSION_ID_ERROR))
-            client_sock.close()
-            return
-        
-        session = self.sessions[session_id]
 
-        # Attach outbound socket (reattach after reconnection)
-        session.outbound_socket = client_sock
-        session.reset_outbound_counters()  # Reset outbound counters for reconnection
-        self.logger.info(f"Session {session_id} reattached outbound socket")
-        
-        # Send session ID back
-        try:
-            client_sock.sendall(encode_session_id(session_id))
-        except Exception as e:
-            self.logger.error(f"Error sending session ID: {e}")
-            session.close_all_sockets()
-            del self.sessions[session_id]
-    
-    def _handle_inbound_connection(self, client_sock: socket.socket, session_id: int) -> None:
-        """Handle inbound connection from proxy-client (attach to existing session)."""
-        # session_id should already be validated as negative
-        
-        # Look up session
-        if session_id not in self.sessions:
-            self.logger.warning(f"Session {session_id} not found")
-            client_sock.sendall(encode_session_id(SESSION_ID_ERROR))
-            client_sock.close()
-            return
-        
-        session = self.sessions[session_id]
-        
-        # Attach inbound socket
-        session.inbound_socket = client_sock
-        self.logger.info(f"Session {session_id} attached inbound socket")
-        
-        # Send session ID back
-        try:
-            # Sending negative id to inbound socket
-            client_sock.sendall(encode_session_id(-session_id))
-        except Exception as e:
-            self.logger.error(f"Error sending session ID: {e}")
-            session.close_all_sockets()
-            del self.sessions[session_id]
-    
     def _handle_client_connection(self, client_sock: socket.socket, addr) -> None:
         """Handle a connection from proxy-client."""
         self.logger.info(f"Connection from proxy-client {addr}")
@@ -222,15 +142,52 @@ class ProxyServer:
             return
         
         if session_id == SESSION_ID_NEW:
-            self._handle_new_connection(client_sock)
-        elif session_id > 0:
-            self._handle_outbound_connection(client_sock, session_id)
-        elif session_id < 0:
-            self._handle_inbound_connection(client_sock, -session_id)
-        else:
-            self.logger.warning(f"Invalid session ID {session_id}")
+            # Connect to target server
+            server_sock = self._connect_to_server()
+            if server_sock is None:
+                # Send error response
+                client_sock.sendall(encode_session_id(SESSION_ID_ERROR))
+                client_sock.close()
+                return
+
+            # Generate new session ID
+            session_id = self._generate_session_id()
+            self.logger.info(f"Created new session {session_id}")
+
+            # Create session
+            self.sessions[session_id] = ProxyServerSession(session_id=session_id, server_socket=server_sock)
+
+        session = self.sessions.get(session_id if session_id > 0 else -session_id)
+
+        if session is None:
+            self.logger.warning(f"Session {session_id} not found")
+            client_sock.sendall(encode_session_id(SESSION_ID_ERROR))
             client_sock.close()
-    
+            return
+
+        if session_id < 0:
+            # Attach inbound socket
+            session.inbound_socket = client_sock
+            session.reset_inbound_counters()
+            self.logger.info(f"Session {session_id} attached inbound socket")
+        else:
+            # Attach outbound socket
+            session.outbound_socket = client_sock
+            session.reset_outbound_counters()
+            self.logger.info(f"Session {session_id} attached outbound socket")
+
+        # Send session ID back to proxy-client
+        try:
+            client_sock.sendall(encode_session_id(session_id))
+            self.logger.info(f"Sent session_id={session_id} to proxy-client")
+        except Exception as e:
+            self.logger.error(f"Error sending session ID: {e}")
+            session.close_all_sockets()
+            del self.sessions[session_id]
+            return
+
+
+
     def run(self) -> None:
         """Run the proxy server."""
         # Create listen socket
