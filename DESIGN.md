@@ -8,8 +8,10 @@
 5. [Data Transfer Protocol](#data-transfer-protocol)
 6. [Connection Handling](#connection-handling)
 7. [Error Handling](#error-handling)
-8. [Implementation Details](#implementation-details)
+8. [State Machines](#state-machines)
 9. [Usage Examples](#usage-examples)
+
+**Implementation Details**: See [IMPLEMENTATION.md](IMPLEMENTATION.md) for detailed data structures, algorithms, and logging configuration.
 
 ---
 
@@ -366,44 +368,183 @@ Action Sequence:
 
 ---
 
-## Implementation Details
+## State Machines
 
-### Data Structures
+### Overview
 
-#### Session (Proxy-Server)
+This section describes the session state machines for both proxy-client and proxy-server components.
 
-```python
-class Session:
-    id: int              # Session ID (1-127)
-    outbound_socket: socket  # Socket from proxy-client (outbound)
-    inbound_socket: socket   # Socket from proxy-client (inbound)
-    server_socket: socket      # Socket to target server
-    state: SessionState        # NEW, ACTIVE, PARTIAL, CLOSED
-    bytes_sent: int            # Total bytes sent (for MAX_SIZE tracking)
-    start_time: datetime       # Session start time (for MAX_TIME tracking)
+**Note**: For detailed data structures and implementation code, see [IMPLEMENTATION.md](IMPLEMENTATION.md).
+
+---
+
+### Proxy-Client State Machine
+
+#### States
+
+| State | Description |
+|-------|-------------|
+| **ACTIVE** | Session active, sockets connected to proxy-server |
+| **CLOSED** | Session terminated, client connection closed |
+
+#### State Transitions
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Proxy-Client State Machine                                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  [INIT]                                                                     │
+│      │                                                                      │
+│      │ Session created                                                      │
+│      ▼                                                                      │
+│  +-------+                                                                  │
+│  |ACTIVE |                                                                  │
+│  +-------+                                                                  │
+│      │                                                                      │
+│      │ Client disconnects                                                   │
+│      │ Socket reconnection (MAX_SIZE/MAX_TIME)                             │
+│      │ Proxy-server disconnect (auto-reconnect)                            │
+│      ▼                                                                      │
+│  +-------+                                                                  │
+│  |CLOSED |                                                                  │
+│  +-------+                                                                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Session (Proxy-Client)
+#### Transition Table
 
-```python
-class Session:
-    id: int              # Session ID (1-127)
-    outbound_socket: socket  # Socket to proxy-server (outbound)
-    inbound_socket: socket   # Socket to proxy-server (inbound)
-    client_socket: socket      # Socket to local client
-    state: SessionState        # ACTIVE, CLOSED
-    bytes_sent: int            # Total bytes sent (for MAX_SIZE tracking)
-    start_time: datetime       # Session start time (for MAX_TIME tracking)
+| Current State | Event | Next State | Action |
+|---------------|-------|------------|--------|
+| N/A | Session created | ACTIVE | Store session ID, connect to proxy-server |
+| ACTIVE | Client disconnects | CLOSED | Close both sockets, delete session |
+| ACTIVE | Socket reconnection (MAX_SIZE/MAX_TIME) | ACTIVE | Close socket, reset counters, reconnect |
+| ACTIVE | Proxy-server disconnect | ACTIVE | Attempt reconnection with session ID |
+| ACTIVE | Error response (session_id=0) | CLOSED | Delete session, close client connection |
+
+#### Proxy-Client State Diagram (Mermaid)
+
+```mermaid
+stateDiagram-v2
+    [*] --> ACTIVE: Session created
+    
+    ACTIVE --> ACTIVE: Socket reconnection\n(MAX_SIZE/MAX_TIME)
+    ACTIVE --> ACTIVE: Proxy-server disconnect\n(auto-reconnect)
+    
+    ACTIVE --> CLOSED: Client disconnects
+    ACTIVE --> CLOSED: Error response\n(session_id=0)
 ```
 
-### Logging Levels
+---
 
-| Level | Purpose | Example Messages |
-|-------|---------|------------------|
-| **DEBUG** | Detailed packet-level information | Chunk transfer details, socket state changes |
-| **INFO** | Connection events | Session establishment, reconnection events |
-| **WARNING** | Threshold reached | Chunk size limits, time-based reconnections |
-| **ERROR** | Critical failures | Session termination, connection failures |
+### Proxy-Server State Machine
+
+#### States
+
+| State | Description |
+|-------|-------------|
+| **NEW** | Session created, waiting for proxy-client connection |
+| **PARTIAL** | Only one socket established (outbound or inbound) |
+| **ACTIVE** | Both sockets (inbound and outbound) established |
+| **CLOSED** | Session terminated |
+
+#### State Transitions
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Proxy-Server State Machine                                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  [INIT]                                                                     │
+│      │                                                                      │
+│      │ Session created                                                      │
+│      ▼                                                                      │
+│  +-------+                                                                  │
+│  |  NEW  |                                                                  │
+│  +-------+                                                                  │
+│      │                                                                      │
+│      │ Outbound socket connected                                            │
+│      ▼                                                                      │
+│  +-------+                                                                  │
+│  |PARTIAL|                                                                  │
+│  +-------+                                                                  │
+│      │                                                                      │
+│      │ Inbound socket connected                                             │
+│      ▼                                                                      │
+│  +-------+                                                                  │
+│  |ACTIVE |                                                                  │
+│  +-------+                                                                  │
+│      │                                                                      │
+│      │ Server disconnects                                                   │
+│      │ Proxy-client disconnects                                             │
+│      ▼                                                                      │
+│  +-------+                                                                  │
+│  |CLOSED |                                                                  │
+│  +-------+                                                                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Transition Table
+
+| Current State | Event | Next State | Action |
+|---------------|-------|------------|--------|
+| NEW | Outbound socket connected | PARTIAL | Store outbound socket |
+| PARTIAL | Inbound socket connected | ACTIVE | Store inbound socket |
+| ACTIVE | Outbound socket closed (MAX_SIZE/MAX_TIME) | ACTIVE | Reset outbound counters |
+| ACTIVE | Inbound socket closed (MAX_SIZE/MAX_TIME) | ACTIVE | Reset inbound counters |
+| ACTIVE | Server disconnects | CLOSED | Close all sockets, delete session |
+| ACTIVE | Proxy-client disconnects | CLOSED | Close all sockets, delete session |
+| PARTIAL | Proxy-client disconnects | CLOSED | Close all sockets, delete session |
+| NEW | Proxy-client disconnects | CLOSED | Close socket, no session created |
+
+#### Proxy-Server State Diagram (Mermaid)
+
+```mermaid
+stateDiagram-v2
+    [*] --> NEW: Session created
+    
+    NEW --> PARTIAL: Outbound socket connected
+    NEW --> CLOSED: Proxy-client disconnects
+    
+    PARTIAL --> ACTIVE: Inbound socket connected
+    PARTIAL --> CLOSED: Proxy-client disconnects
+    
+    ACTIVE --> ACTIVE: Outbound socket closed\n(MAX_SIZE/MAX_TIME)
+    ACTIVE --> ACTIVE: Inbound socket closed\n(MAX_SIZE/MAX_TIME)
+    ACTIVE --> CLOSED: Server disconnects
+    ACTIVE --> CLOSED: Proxy-client disconnects
+```
+
+---
+
+### Session Establishment Flow (Detailed)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Session Establishment Sequence                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  PROXY-CLIENT                          PROXY-SERVER                         │
+│       |                                     |                               │
+│       |  [NEW]                              |                               │
+│       |----- session_id=0 (outbound) ----->|  Create session               │
+│       |                                     |  Connect to server            │
+│       |                                     |  [NEW → PARTIAL]              │
+│       |                                     |<-- session_id=42 (OK)         │
+│       |<---- session_id=42 (OK) -----------|  Store session ID=42          │
+│       |  [ACTIVE]                           |                               │
+│       |                                     |                               │
+│       |----- session_id=-42 (inbound) ---->|  Find session ID=42           │
+│       |                                     |  [PARTIAL → ACTIVE]           │
+│       |                                     |<-- session_id=-42 (OK)        │
+│       |<---- session_id=-42 (OK) ----------|  Attach inbound socket        │
+│       |                                     |  Data transfer begins         │
+│       |<========== DATA TRANSFER ==========>|                               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
