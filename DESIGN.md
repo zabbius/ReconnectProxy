@@ -74,17 +74,21 @@ ReconnectProxy is a TCP proxy system consisting of two components: **proxy-clien
 
 ```
 1. Client connects to Proxy-Client
-2. Proxy-Client connects to Proxy-Server with session_id=0
+2. Proxy-Client connects to Proxy-Server with session_id=0 (outbound)
 3. Proxy-Server connects to target server
-4. On failure, Proxy-Server send 0 to client and closes socket  
+4. On failure, Proxy-Server sends 0 to Proxy-Client and closes socket
+   - Proxy-Client MUST delete the session and close the client connection
 5. Proxy-Server creates session, generates ID (e.g., 42)
-5. Proxy-Server sends session_id=42 to Proxy-Client
-6. Proxy-Client stores session_id=42 for current session and socket is used for outbound data 
-7. Proxy-Client connects to Proxy-Server with session_id=-42 (inbound)
-8. Proxy-Server find session with id 42, then sends -42 back to Proxy-Client 
-9. If session is not found, Proxy-Server sends 0 to Proxy-Client and closes socket
-10. Socket with negative session ID is attached to session and use for inbound data
-11. Data transfer is started
+6. Proxy-Server sends session_id=42 to Proxy-Client
+7. Proxy-Client stores session_id=42 for current session and socket is used for outbound data
+8. Proxy-Client connects to Proxy-Server with session_id=-42 (inbound)
+9. Proxy-Server finds session with id 42, then sends -42 back to Proxy-Client
+10. If session is not found, Proxy-Server sends 0 to Proxy-Client and closes socket
+    - Proxy-Client MUST delete the session and close the client connection
+11. Socket with negative session ID is attached to session and used for inbound data
+12. Data transfer is started
+13. Proxy-Client use session_id=42 for futher reconnections of inbound and outbound sockets
+14. Outbound and inbound sockets are reconnected, reconnect conditions are described below
 ```
 
 ## Data Transfer Protocol
@@ -120,28 +124,75 @@ PROXY-CLIENT                          PROXY-SERVER
      |<========== DATA TRANSFER ==========>|
 ```
 
+#### Error Cases
+
+```
+PROXY-CLIENT                          PROXY-SERVER
+     |                                     |
+     |---- session_id=0 (new session) ---->|
+     |                                     | (server connection fails)
+     |                                     | (sends session_id=0 back)
+     |<--- session_id=0 (ERROR) -----------|
+     | (delete session, close client)      |
+     |                                     |
+     |---- session_id=-42 (inbound) ------>| 
+     |                                     | (session not found)
+     |                                     | (sends session_id=0 back)
+     |<--- session_id=0 (ERROR) -----------|
+     | (delete session, close client)      |
+```
+
 ## Data Transfer Algorithm
 
 ### Outbound Data (Proxy-Client → Proxy-Server)
 
-1. Proxy-client establishes outbound socket to proxy-server
-2. Data is sent from proxy-client to proxy-server in chunks with size not more than `CHUNK_SIZE`
-3. After sending `MAX_SIZE` bytes total, proxy-client closes outbound socket (triggers reconnection)
-4. Outbound socket is closed by proxy-client after `MAX_TIME` seconds (triggers reconnection)
+1. Proxy-client establishes outbound socket to proxy-server with `session_id=0` (new session)
+2. Proxy-client waits for response from proxy-server
+3. If proxy-server responds with `session_id=0`, the session establishment failed:
+   - Proxy-client MUST delete the session
+   - Proxy-client MUST close the client connection
+   - No further data transfer occurs
+4. If proxy-server responds with positive `session_id` (1-127), the session is established
+5. Data is sent from proxy-client to proxy-server in chunks with size not more than `CHUNK_SIZE`
+6. **Only the sender closes the socket**: Proxy-client closes outbound socket after sending `MAX_SIZE` bytes total (triggers reconnection)
+7. **Only the sender closes the socket**: Proxy-client closes outbound socket after `MAX_TIME` seconds (triggers reconnection)
+8. Proxy-server keeps inbound socket open to receive any remaining buffered data from the closed socket
 
 ### Inbound Data (Proxy-Server → Proxy-Client)
 
-1. Proxy-client establishes inbound socket to proxy-server
-2. Data is sent from proxy-server to proxy-client in chunks with size not more than `CHUNK_SIZE`
-3. After sending `MAX_SIZE` bytes total, proxy-server closes inbound socket (triggers reconnection)
-4. Inbound socket is closed by proxy-server after `MAX_TIME` seconds (triggers reconnection)
+1. Proxy-client establishes inbound socket to proxy-server with `session_id=-session_id` (negative)
+2. Proxy-client waits for response from proxy-server
+3. If proxy-server responds with `session_id=0`, the session was not found:
+   - Proxy-client MUST delete the session
+   - Proxy-client MUST close the client connection
+   - No further data transfer occurs
+4. If proxy-server responds with negative `session_id`, the session is attached
+5. Data is sent from proxy-server to proxy-client in chunks with size not more than `CHUNK_SIZE`
+6. **Only the sender closes the socket**: Proxy-server closes inbound socket after sending `MAX_SIZE` bytes total (triggers reconnection)
+7. **Only the sender closes the socket**: Proxy-server closes inbound socket after `MAX_TIME` seconds (triggers reconnection)
+8. Proxy-client keeps outbound socket open to receive any remaining buffered data from the closed socket
+
+### Socket Closing Behavior
+
+**Key Principle**: Only the side that sends data closes its socket when limits are reached. The receiving side keeps its socket open to prevent data loss.
+
+| Direction | Sender | Socket Closed By | Reason |
+|-----------|--------|------------------|--------|
+| Client → Server | Proxy-Client | Proxy-client on MAX_SIZE/MAX_TIME | Proxy-client sends data to proxy-server |
+| Server → Client | Proxy-Server | Proxy-server on MAX_SIZE/MAX_TIME | Proxy-server sends data to proxy-client |
+
+**Data Loss Prevention**:
+- When a socket is closed by the sender, the receiver keeps its socket open
+- This allows any buffered data in the network to be received
+- Session persists until both directions have completed data transfer
+- Only when client or server disconnects is the session fully terminated
 
 ### Parameters
 
 | Parameter | Description | Default               |
 |-----------|-------------|-----------------------|
 | CHUNK_SIZE | Maximum size of data chunks for transfer | 16 bytes              |
-| MAX_SIZE | Maximum total bytes to transfer before reconnection | 256 bytes (1 MB)      |
+| MAX_SIZE | Maximum total bytes to transfer before reconnection | 256 bytes      |
 | MAX_TIME | Maximum time in seconds before reconnection | 5 seconds  |
 
 ## Connection Handling
@@ -171,6 +222,51 @@ PROXY-CLIENT                          PROXY-SERVER
 3. **Connection lost**: Network failure triggers automatic reconnection
 4. **Session cleanup**: Session deleted after normal termination
 
+#### Session Persistence During Socket Reconnection
+
+When a socket is closed by **MAX_SIZE** or **MAX_TIME** limits, the session is **NOT deleted** and both proxy-client and proxy-server maintain their session state:
+
+**Proxy-Client Behavior:**
+- Session remains active with stored session ID
+- Client connection remains alive
+- Proxy-client automatically reconnects to proxy-server using the existing session ID
+- Outbound socket reconnects with positive session ID (e.g., `session_id=42`)
+- Inbound socket reconnects with negative session ID (e.g., `session_id=-42`)
+
+**Proxy-Server Behavior:**
+- Session remains active with stored session ID
+- Server connection remains alive
+- Proxy-server accepts reconnection with existing session ID
+- Session state transitions to ACTIVE when both sockets are reconnected
+
+**Data Transfer Continuation:**
+- After reconnection, data transfer continues with fresh byte/time counters
+- The session continues until client or server disconnects
+- Session is only deleted when client or server closes the connection
+
+**Example Flow:**
+```
+PROXY-CLIENT                          PROXY-SERVER
+     |                                     |
+     |---- session_id=42 (outbound) ----->|  (MAX_SIZE or MAX_TIME reached)
+     |<--- socket closed ------------------|
+     | (session persists)                  |
+     |                                     |
+     |---- session_id=42 (reconnect) ----->|  (outbound)
+     |                                     | (session found, ACTIVE)
+     |<--- session_id=42 ------------------|
+     |                                     |
+     |---- session_id=-42 (inbound) ------>|  (MAX_SIZE or MAX_TIME reached)
+     |<--- socket closed ------------------|
+     | (session persists)                  |
+     |                                     |
+     |---- session_id=-42 (reconnect) ----->| (inbound)
+     |                                     | (session found, ACTIVE)
+     |<--- session_id=-42 -----------------|
+     |                                     |
+     |<========== DATA TRANSFER ==========>|  (continues)
+```
+
 ## Data Flow
 
 ### Client → Server Direction
@@ -195,9 +291,28 @@ Server → Proxy-Server (inbound socket, -session_id)
 - Skips 0 (reserved for new session creation)
 
 ### Session Not Found
-- Proxy-server receives unknown session ID
-- Proxy-server sends session_id=0 and closes socket
-- Proxy-client closes client connection
+
+#### Outbound Socket Failure (New Session)
+- Proxy-server fails to connect to target server
+- Proxy-server sends `session_id=0` to Proxy-Client and closes socket
+- Proxy-Client MUST:
+  1. Delete the session (if any was partially created)
+  2. Close the client connection
+  3. No reconnection attempt should be made
+
+#### Inbound Socket Failure (Session Not Found)
+- Proxy-server receives inbound socket request with unknown session ID
+- Proxy-server sends `session_id=0` to Proxy-Client and closes socket
+- Proxy-Client MUST:
+  1. Delete the session (if any was partially created)
+  2. Close the client connection
+  3. No reconnection attempt should be made
+
+#### Error Response Semantics
+- `session_id=0` is a special error indicator
+- It means the session establishment failed
+- Proxy-Client MUST NOT attempt to use a session with `session_id=0`
+- Proxy-Client MUST clean up all session resources and close the client connection
 
 ## Implementation Details
 
